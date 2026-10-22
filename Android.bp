@@ -1,0 +1,30 @@
+//
+// SPDX-FileCopyrightText: The LineageOS Project
+// SPDX-License-Identifier: Apache-2.0
+//
+
+cc_library_shared {
+    name: "libminkdescriptor.qcomtee",
+    stem: "libminkdescriptor",
+    device_specific: true,
+    srcs: [
+        "src/fdwrapper.cpp",
+        "src/timed_retry_forwarder.cpp",
+        "src/tzcom.cpp",
+    ],
+    static_libs: [
+        "libminkadaptor",
+        "libqcbor_static",
+        "libqcomtee",
+    ],
+    shared_libs: ["liblog"],
+    version_script: "src/libminkdescriptor.map",
+}
+
+cc_binary {
+    name: "minkcompat_test",
+    device_specific: true,
+    srcs: ["test/minkcompat_test.cpp"],
+    shared_libs: ["libminkdescriptor.qcomtee"],
+    header_libs: ["libminkadaptor_headers"],
+}

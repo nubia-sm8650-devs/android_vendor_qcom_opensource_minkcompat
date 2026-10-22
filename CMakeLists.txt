@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.18)
 project(minkcompat C CXX ASM)
 
-set(QCBOR_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../QCBOR CACHE PATH "QCBOR source tree")
+set(QCBOR_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../qcbor CACHE PATH "QCBOR source tree")
 set(QUIC_TEEC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../quic-teec CACHE PATH "quic-teec source tree")
 set(MINKIPC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../minkipc CACHE PATH "minkipc source tree")
 
