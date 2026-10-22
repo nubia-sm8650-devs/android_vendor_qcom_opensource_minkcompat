@@ -1,0 +1,14 @@
+{
+global:
+	TZCom_getRootEnvObject;
+	TZCom_getRootEnvObjectWithCB;
+	TZCom_getClientEnvObject;
+	TZCom_getFdObject;
+	MinkDescriptor_getRootEnv;
+	FdWrapper_new;
+	extern "C++" {
+		"TimedRetryForwarder_new(unsigned long, unsigned long, Object, Object*)";
+	};
+local:
+	*;
+};
