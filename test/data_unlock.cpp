@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <linux/dm-ioctl.h>
 #include <linux/fs.h>
+#include <linux/fscrypt.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/ioctl.h>
@@ -257,19 +258,83 @@ static void crash_handler(int sig, siginfo_t *si, void *)
 	_exit(128 + sig);
 }
 
+static std::string to_hex(const uint8_t *p, size_t n)
+{
+	static const char digits[] = "0123456789abcdef";
+	std::string out;
+
+	for (size_t i = 0; i < n; i++) {
+		out += digits[p[i] >> 4];
+		out += digits[p[i] & 0xf];
+	}
+	return out;
+}
+
+/* vold KeyUtil.cpp installKey() for v2 policies and wrappedkey_v0 */
+static bool add_fbe_key(const char *path, const Bytes &eph)
+{
+	int fd = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	if (fd < 0) {
+		perror(path);
+		return false;
+	}
+
+	struct fscrypt_get_policy_ex_arg pol = {};
+	pol.policy_size = sizeof(pol.policy);
+	if (ioctl(fd, FS_IOC_GET_ENCRYPTION_POLICY_EX, &pol)) {
+		perror("FS_IOC_GET_ENCRYPTION_POLICY_EX");
+		close(fd);
+		return false;
+	}
+	if (pol.policy.version != FSCRYPT_POLICY_V2) {
+		fprintf(stderr, "%s: policy version %u, expected 2\n", path, pol.policy.version);
+		close(fd);
+		return false;
+	}
+	const auto &v2 = pol.policy.v2;
+	printf("%s policy: contents %u filenames %u flags 0x%x key %s\n", path,
+	       v2.contents_encryption_mode, v2.filenames_encryption_mode, v2.flags,
+	       to_hex(v2.master_key_identifier, FSCRYPT_KEY_IDENTIFIER_SIZE).c_str());
+
+	std::vector<uint8_t> buf(sizeof(struct fscrypt_add_key_arg) + eph.size());
+	auto *arg = reinterpret_cast<struct fscrypt_add_key_arg *>(buf.data());
+	arg->key_spec.type = FSCRYPT_KEY_SPEC_TYPE_IDENTIFIER;
+	arg->raw_size = eph.size();
+	arg->__flags = __FSCRYPT_ADD_KEY_FLAG_HW_WRAPPED;
+	memcpy(arg->raw, eph.data(), eph.size());
+
+	int ret = ioctl(fd, FS_IOC_ADD_ENCRYPTION_KEY, arg);
+	memset(arg->raw, 0, eph.size());
+	close(fd);
+	if (ret) {
+		perror("FS_IOC_ADD_ENCRYPTION_KEY");
+		return false;
+	}
+
+	bool match = !memcmp(arg->key_spec.u.identifier, v2.master_key_identifier,
+			     FSCRYPT_KEY_IDENTIFIER_SIZE);
+	printf("added key %s, %s the policy\n",
+	       to_hex(arg->key_spec.u.identifier, FSCRYPT_KEY_IDENTIFIER_SIZE).c_str(),
+	       match ? "matches" : "does NOT match");
+	return match;
+}
+
 static int usage(const char *argv0)
 {
 	fprintf(stderr,
 		"usage: %s <metadata key dir> <userdata block device> <dm name>\n"
-		"       %s --info <metadata key dir>\n"
-		"  e.g. %s /metadata/vold/metadata_encryption/key /dev/block/by-name/userdata userdata-ro\n",
-		argv0, argv0, argv0);
+		"       %s --info <key dir>\n"
+		"       %s --fbe <key dir> <encrypted directory>\n"
+		"  e.g. %s /metadata/vold/metadata_encryption/key /dev/block/by-name/userdata userdata-ro\n"
+		"       %s --fbe /mnt/data/unencrypted/key /mnt/data/system_de\n",
+		argv0, argv0, argv0, argv0, argv0);
 	return 2;
 }
 
 int main(int argc, char **argv)
 {
 	bool info_only = argc == 3 && !strcmp(argv[1], "--info");
+	bool fbe = argc == 4 && !strcmp(argv[1], "--fbe");
 
 	if (argc != 4 && !info_only)
 		return usage(argv[0]);
@@ -285,9 +350,9 @@ int main(int argc, char **argv)
 	sigaction(SIGBUS, &sa, nullptr);
 	sigaction(SIGABRT, &sa, nullptr);
 
-	std::string dir = argv[info_only ? 2 : 1];
-	const char *blkdev = info_only ? nullptr : argv[2];
-	const char *name = info_only ? nullptr : argv[3];
+	std::string dir = argv[info_only || fbe ? 2 : 1];
+	const char *blkdev = info_only || fbe ? nullptr : argv[2];
+	const char *name = info_only || fbe ? nullptr : argv[3];
 	Bytes version, secdiscardable, blob, encrypted, storage_key, eph;
 
 	if (!read_file(dir + "/version", &version) || !read_file(dir + "/keymaster_key_blob", &blob) ||
@@ -350,11 +415,14 @@ int main(int argc, char **argv)
 	printf("begin: app_id %zu bytes, blob %zu bytes\n", app_id.size(), blob.size());
 	if (!decrypt_key_storage(*km, blob, app_id, encrypted, &storage_key))
 		return 1;
-	printf("metadata storage key: %zu bytes\n", storage_key.size());
+	printf("storage key: %zu bytes\n", storage_key.size());
 
 	if (!ephemeral_key(*km, storage_key, &eph))
 		return 1;
 	printf("ephemeral key: %zu bytes\n", eph.size());
+
+	if (fbe)
+		return add_fbe_key(argv[3], eph) ? 0 : 1;
 
 	int fd = open(blkdev, O_RDONLY | O_CLOEXEC);
 	uint64_t bytes = 0;
@@ -364,12 +432,7 @@ int main(int argc, char **argv)
 	}
 	close(fd);
 
-	static const char hex[] = "0123456789abcdef";
-	std::string hex_key;
-	for (uint8_t b : eph) {
-		hex_key += hex[b >> 4];
-		hex_key += hex[b & 0xf];
-	}
+	std::string hex_key = to_hex(eph.data(), eph.size());
 
 	dev_t dev;
 	if (!dm_create(name, blkdev, (bytes / 512) & ~7ULL, hex_key, &dev))
