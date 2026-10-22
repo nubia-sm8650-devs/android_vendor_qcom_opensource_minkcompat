@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 #include <atomic>
+#include <mutex>
 #include <new>
 #include <time.h>
 
@@ -13,6 +14,7 @@ struct TimedRetryForwarder {
 	size_t ms_timeout;
 	size_t ms_interval;
 	Object obj;
+	std::mutex lock;
 };
 
 int32_t forwarder_new(size_t ms_timeout, size_t ms_interval, Object obj, Object *out);
@@ -57,6 +59,8 @@ int32_t forwarder_invoke(ObjectCxt cxt, ObjectOp op, ObjectArg *args, ObjectCoun
 		}
 	}
 
+	std::lock_guard<std::mutex> guard(me->lock);
+
 	deadline = now_ms() + (long long)me->ms_timeout;
 	for (;;) {
 		ret = Object_invoke(me->obj, op, args, counts);
@@ -68,16 +72,24 @@ int32_t forwarder_invoke(ObjectCxt cxt, ObjectOp op, ObjectArg *args, ObjectCoun
 	if (!Object_isOK(ret))
 		return ret;
 
-	for (size_t i = ObjectCounts_indexOO(counts);
-	     i < ObjectCounts_indexOO(counts) + ObjectCounts_numOO(counts); i++) {
+	size_t first = ObjectCounts_indexOO(counts);
+	size_t last = first + ObjectCounts_numOO(counts);
+
+	for (size_t i = first; i < last; i++) {
 		Object wrapped = Object_NULL;
 
 		if (Object_isNull(args[i].o) || args[i].o.invoke != me->obj.invoke)
 			continue;
 
 		ret = forwarder_new(me->ms_timeout, me->ms_interval, args[i].o, &wrapped);
-		if (!Object_isOK(ret))
+		if (!Object_isOK(ret)) {
+			for (size_t j = first; j < last; j++) {
+				if (!Object_isNull(args[j].o))
+					Object_release(args[j].o);
+				args[j].o = Object_NULL;
+			}
 			return ret;
+		}
 		args[i].o = wrapped;
 	}
 
