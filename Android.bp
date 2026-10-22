@@ -28,3 +28,16 @@ cc_binary {
     shared_libs: ["libminkdescriptor.qcomtee"],
     header_libs: ["libminkadaptor_headers"],
 }
+
+cc_binary {
+    name: "minkcompat_data_unlock",
+    device_specific: true,
+    srcs: ["test/data_unlock.cpp"],
+    shared_libs: [
+        "android.hardware.security.keymint-V3-ndk",
+        "libbinder_ndk",
+        "libcrypto",
+        "libdl",
+        "liblog",
+    ],
+}
