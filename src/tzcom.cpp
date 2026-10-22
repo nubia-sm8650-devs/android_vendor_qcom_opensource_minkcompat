@@ -81,7 +81,7 @@ extern "C" int TZCom_getFdObject(int fd, Object *obj)
 		return Object_ERROR;
 	}
 
-	*obj = FdWrapper_new(fd);
+	*obj = minkcompat_fdwrapper_new(fd);
 	if (Object_isNull(*obj))
 		return Object_ERROR_KMEM;
 
